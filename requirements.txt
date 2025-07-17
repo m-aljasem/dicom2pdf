@@ -1,0 +1,6 @@
+streamlit>=1.10
+pydicom>=2.3
+numpy>=1.21
+matplotlib>=3.5
+pylibjpeg
+pylibjpeg-libjpeg

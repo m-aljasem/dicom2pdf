@@ -1,6 +1,9 @@
 import os
 import zipfile
 import tempfile
+import random
+import shutil
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -34,7 +37,7 @@ def read_dicom_image(file_path: str) -> Tuple[np.ndarray, dict]:
     except:
         return None, None
 
-def normalize_image(image_array: np.ndarray) -> np.ndarray:
+def normalize_image(image_array: np.ndarray, contrast_factor=0.9) -> np.ndarray:
     image_array = image_array.astype(np.float64)
     p2, p98 = np.percentile(image_array, [2, 98])
     image_array = np.clip(image_array, p2, p98)
@@ -42,7 +45,7 @@ def normalize_image(image_array: np.ndarray) -> np.ndarray:
     img_max = np.max(image_array)
     if img_max > img_min:
         image_array = (image_array - img_min) / (img_max - img_min)
-    return np.power(image_array, 0.9)  # Slight gamma correction for contrast
+    return np.power(image_array, contrast_factor)
 
 def find_dicom_files(folder_path: str):
     extensions = ['.dcm', '.dicom']
@@ -57,7 +60,7 @@ def find_dicom_files(folder_path: str):
                     pass
     return dicom_files
 
-def convert_to_pdf(dicom_folder: str, output_pdf: str):
+def convert_to_pdf(dicom_folder: str, output_pdf: str, contrast_factor: float = 0.9, dpi: int = 200):
     dicom_files = find_dicom_files(dicom_folder)
     if not dicom_files:
         return None
@@ -68,24 +71,32 @@ def convert_to_pdf(dicom_folder: str, output_pdf: str):
             if image_array is None:
                 continue
 
-            norm_img = normalize_image(image_array)
+            norm_img = normalize_image(image_array, contrast_factor)
 
-            fig, ax = plt.subplots(figsize=(10, 10), facecolor='black')  # Square page, black background
+            fig, ax = plt.subplots(figsize=(10, 10), facecolor='black')
             ax.imshow(norm_img, cmap='gray', vmin=0, vmax=1)
             ax.set_facecolor('black')
             ax.axis('off')
 
             title = f"{metadata.get('patient_name', '')} | {metadata.get('series_description', '')}"
-            fig.suptitle(title, fontsize=12, y=0.95, color='white')  # White title text
+            fig.suptitle(title, fontsize=12, y=0.95, color='white')
 
-            # Add custom footer text
             fig.text(0.5, 0.02, 'DICOM2PDF - By Mohmad AlJasem https://aljasem.eu.org', 
                      ha='center', va='bottom', fontsize=10, color='white')
 
-            pdf.savefig(fig, bbox_inches='tight', pad_inches=0.1, facecolor=fig.get_facecolor())
+            pdf.savefig(fig, bbox_inches='tight', pad_inches=0.1, facecolor=fig.get_facecolor(), dpi=dpi)
             plt.close(fig)
 
     return output_pdf
+
+def extract_archive(archive_path: str, extract_to: str):
+    if archive_path.endswith(".zip"):
+        with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_to)
+    elif archive_path.endswith(".rar"):
+        subprocess.run(["unrar", "x", "-y", archive_path, extract_to], check=False)
+    elif archive_path.endswith(".iso"):
+        subprocess.run(["7z", "x", archive_path, f"-o{extract_to}"], check=False)
 
 # Streamlit app
 st.set_page_config(page_title="DICOM to PDF Converter", page_icon="🧠", layout="centered")
@@ -114,22 +125,33 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🧠 DICOM to PDF Converter")
-st.write("Upload a **.zip** file containing your DICOM images. We'll generate a high-quality PDF scan for you.")
+st.write("Upload a **.zip**, **.rar**, or **.iso** file containing your DICOM images. We'll generate a high-quality PDF scan for you.")
 
-uploaded_zip = st.file_uploader("Upload zipped DICOM folder", type=["zip"])
+uploaded_archive = st.file_uploader("Upload compressed DICOM archive", type=["zip", "rar", "iso"])
 
-if uploaded_zip:
+contrast_factor = st.slider("Adjust Contrast", 0.5, 1.5, 0.9, step=0.05)
+dpi = st.slider("Set PDF Resolution (DPI)", 100, 300, 200, step=10)
+
+if uploaded_archive:
     with st.spinner("Processing your DICOM files..."):
         with tempfile.TemporaryDirectory() as temp_dir:
-            zip_path = os.path.join(temp_dir, "dicom.zip")
-            with open(zip_path, "wb") as f:
-                f.write(uploaded_zip.read())
+            archive_path = os.path.join(temp_dir, uploaded_archive.name)
+            with open(archive_path, "wb") as f:
+                f.write(uploaded_archive.read())
 
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(temp_dir)
+            extract_archive(archive_path, temp_dir)
+            dicom_files = find_dicom_files(temp_dir)
+            if dicom_files:
+                st.subheader("📸 Image Preview")
+                preview_files = random.sample(dicom_files, min(10, len(dicom_files)))
+                for file in preview_files:
+                    image_array, metadata = read_dicom_image(file)
+                    if image_array is not None:
+                        norm_img = normalize_image(image_array, contrast_factor)
+                        st.image(norm_img, caption=str(file), use_column_width=True, clamp=True)
 
             output_pdf_path = os.path.join(temp_dir, "output.pdf")
-            result = convert_to_pdf(temp_dir, output_pdf_path)
+            result = convert_to_pdf(temp_dir, output_pdf_path, contrast_factor=contrast_factor, dpi=dpi)
 
             if result and os.path.exists(output_pdf_path):
                 with open(output_pdf_path, "rb") as f:
@@ -138,7 +160,7 @@ if uploaded_zip:
             else:
                 st.error("Failed to generate PDF. Please check your files.")
 else:
-    st.info("Please upload a zipped folder containing DICOM files.")
+    st.info("Please upload a compressed folder containing DICOM files.")
 
 st.markdown("""
     <div class="custom-footer">
